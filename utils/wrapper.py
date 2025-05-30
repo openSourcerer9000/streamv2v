@@ -16,8 +16,9 @@ from streamv2v.models.attention_processor import CachedSTXFormersAttnProcessor, 
 
 
 torch.set_grad_enabled(False)
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 
 class StreamV2VWrapper:

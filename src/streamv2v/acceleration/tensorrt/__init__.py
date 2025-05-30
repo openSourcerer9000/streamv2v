@@ -13,6 +13,7 @@ from .builder import EngineBuilder, create_onnx_path
 from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine
 from .models import VAE, BaseModel, UNet, VAEEncoder
 
+torchbackend = torch.mps if torch.backends.mps.is_available() else torch.cuda
 
 class TorchVAEEncoder(torch.nn.Module):
     def __init__(self, vae: AutoencoderKL):
@@ -105,7 +106,7 @@ def accelerate_with_tensorrt(
     vae.to(torch.device("cpu"))
 
     gc.collect()
-    torch.cuda.empty_cache()
+    torchbackend.empty_cache()
 
     onnx_dir = os.path.join(engine_dir, "onnx")
     os.makedirs(onnx_dir, exist_ok=True)
@@ -183,6 +184,6 @@ def accelerate_with_tensorrt(
     setattr(stream.vae, "dtype", vae_dtype)
 
     gc.collect()
-    torch.cuda.empty_cache()
+    torchbackend.empty_cache()
 
     return stream
