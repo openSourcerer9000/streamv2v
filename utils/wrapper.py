@@ -323,10 +323,13 @@ class StreamV2VWrapper:
             self.stream.update_prompt(prompt)
 
         if isinstance(image, str) or isinstance(image, Image.Image):
-            image = self.preprocess_image(image)
+            print(f"Preprocessing image")
+            image = self.preprocess_image(image.to('cpu')).to(self.device, self.dtype)
+            # image = self.preprocess_image(image)
 
         image_tensor = self.stream(image)
-        image = self.postprocess_image(image_tensor, output_type=self.output_type)
+        print(f"Postprocessing image")
+        image = self.postprocess_image(image_tensor.to('cpu'), output_type=self.output_type)
 
         if self.use_safety_checker:
             safety_checker_input = self.feature_extractor(
