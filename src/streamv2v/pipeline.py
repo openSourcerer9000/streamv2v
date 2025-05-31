@@ -32,6 +32,14 @@ class StreamV2V:
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
     ) -> None:
         self.device = pipe.device
+        if self.device.type == "mps":
+            self.torchbackend = torch.mps
+        elif self.device.type == "cuda":
+            if torch.cuda.is_available():
+                self.torchbackend = torch.cuda
+            else:
+                raise RuntimeError("CUDA is not available. Please check your PyTorch installation.")
+        
         self.dtype = torch_dtype
         self.generator = None
         self.height = height
@@ -78,6 +86,7 @@ class StreamV2V:
         # Initialize pooled text embeddings attributes
         self.pooled_prompt_embeds: Optional[torch.Tensor] = None
         self.null_pooled_prompt_embeds: Optional[torch.Tensor] = None
+
 
     def load_lcm_lora(
         self,
@@ -244,51 +253,6 @@ class StreamV2V:
         self.randn_noise = self.init_noise[:1].clone()
         self.warp_noise = self.init_noise[:1].clone()
         self.stock_noise = torch.zeros_like(self.init_noise)
-        # Pre-compute scheduler scaling factors c_skip and c_out for each sub-timestep
-        c_skip_list = []
-        c_out_list = []
-        for timestep in self.sub_timesteps:
-            c_skip, c_out = self.scheduler.get_scalings_for_boundary_condition_discrete(timestep)
-            c_skip_list.append(c_skip)
-            c_out_list.append(c_out)
-        self.c_skip = (
-            torch.stack(c_skip_list)
-            .view(len(self.t_list), 1, 1, 1)
-            .to(dtype=self.dtype, device=self.device)
-        )
-        self.c_out = (
-            torch.stack(c_out_list)
-            .view(len(self.t_list), 1, 1, 1)
-            .to(dtype=self.dtype, device=self.device)
-        )
-        # Pre-compute alpha and beta terms for noise addition
-        alpha_prod_t_sqrt_list = []
-        beta_prod_t_sqrt_list = []
-        for timestep in self.sub_timesteps:
-            alpha_prod_t_sqrt = self.scheduler.alphas_cumprod[timestep].sqrt()
-            beta_prod_t_sqrt = (1 - self.scheduler.alphas_cumprod[timestep]).sqrt()
-            alpha_prod_t_sqrt_list.append(alpha_prod_t_sqrt)
-            beta_prod_t_sqrt_list.append(beta_prod_t_sqrt)
-        alpha_prod_t_sqrt = (
-            torch.stack(alpha_prod_t_sqrt_list)
-            .view(len(self.t_list), 1, 1, 1)
-            .to(dtype=self.dtype, device=self.device)
-        )
-        beta_prod_t_sqrt = (
-            torch.stack(beta_prod_t_sqrt_list)
-            .view(len(self.t_list), 1, 1, 1)
-            .to(dtype=self.dtype, device=self.device)
-        )
-        self.alpha_prod_t_sqrt = torch.repeat_interleave(
-            alpha_prod_t_sqrt,
-            repeats=self.frame_bff_size if self.use_denoising_batch else 1,
-            dim=0,
-        )
-        self.beta_prod_t_sqrt = torch.repeat_interleave(
-            beta_prod_t_sqrt,
-            repeats=self.frame_bff_size if self.use_denoising_batch else 1,
-            dim=0,
-        )
 
     @torch.no_grad()
     def update_prompt(self, prompt: str) -> None:
@@ -318,9 +282,10 @@ class StreamV2V:
         noise: torch.Tensor,
         t_index: int,
     ) -> torch.Tensor:
+        # Ensure alpha_prod_t_sqrt and beta_prod_t_sqrt are broadcasted correctly
+        alpha = self.alpha_prod_t_sqrt[t_index]
+        beta = self.beta_prod_t_sqrt[t_index]
         noisy_samples = (
-            self.alpha_prod_t_sqrt[t_index] * original_samples
-            + self.beta_prod_t_sqrt[t_index] * noise
         )
         return noisy_samples
 
@@ -485,8 +450,8 @@ class StreamV2V:
 
     @torch.no_grad()
     def __call__(self, x: Union[torch.Tensor, PIL.Image.Image, np.ndarray] = None) -> torch.Tensor:
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
+        start = self.torchbackend.Event(enable_timing=True)
+        end = self.torchbackend.Event(enable_timing=True)
         start.record()
         if x is not None:
             # Preprocess input image to latent
@@ -507,7 +472,7 @@ class StreamV2V:
         x_output = self.decode_image(x_0_pred_out).detach().clone()
         self.prev_image_result = x_output
         end.record()
-        torch.cuda.synchronize()
+        self.torchbackend.synchronize()
         inference_time = start.elapsed_time(end) / 1000.0
         # Update exponential moving average of inference time
         self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time

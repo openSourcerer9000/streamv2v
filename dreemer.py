@@ -992,7 +992,7 @@ def dream(invideo,
 
     try:
         stream.stream.load_lcm_lora(
-            pretrained_model_name_or_path_or_dict="latent-consistency/lcm-lora-sdv1-5",
+            lcm_lora_id,
             adapter_name="lcm"
             )
     except Exception as e:
