@@ -864,7 +864,7 @@ def dream(invideo,
     assert prompt is not None
     num_inference_steps=max(t_index_list)+1
     print(f'num_inference_steps: {num_inference_steps}')
-    print('prompt',prompt)
+    # print('prompt',prompt)
 
     
     if loras:

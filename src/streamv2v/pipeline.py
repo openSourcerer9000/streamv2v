@@ -72,7 +72,7 @@ class StreamV2V:
         self.image_processor = VaeImageProcessor(pipe.vae_scale_factor)
         # self.scheduler = FlowMatchEulerDiscreteScheduler.from_config(self.pipe.scheduler.config)
         # new FlowMatch scheduler (for SD-3.5)
-        print(f"Using FlowMatchEulerDiscreteScheduler for SD-3.5 {self.pipe.scheduler.config}")
+        # print(f"Using FlowMatchEulerDiscreteScheduler for SD-3.5 {self.pipe.scheduler.config}")
         self.scheduler = FlowMatchEulerDiscreteScheduler.from_config(
             self.pipe.scheduler.config
         )
@@ -326,7 +326,13 @@ class StreamV2V:
             x_t_latent_plus_uc = torch.concat([x_t_latent, x_t_latent], dim=0)
             t_list = torch.concat([t_list, t_list], dim=0)
         else:
-            x_t_latent_plus_uc = x_t_latent
+            # Ensure the input tensor has the correct number of channels (16)
+            if x_t_latent.shape[1] != 16:
+                # Add a convolutional layer to adjust the number of channels
+                weight = torch.randn(16, 4, 3, 3, dtype=x_t_latent.dtype, device=x_t_latent.device)
+                x_t_latent_plus_uc = torch.nn.functional.conv2d(x_t_latent, weight=weight, stride=1, padding=1)
+            else:
+                x_t_latent_plus_uc = x_t_latent
         # Denoise using the transformer (SD3.5) model
         model_out = self.transformer(
             hidden_states=x_t_latent_plus_uc,
@@ -341,20 +347,22 @@ class StreamV2V:
             # In "initialize" mode, first element is unconditional prediction
             noise_pred_text = model_pred[1:]
             # Store unconditional noise for self-guidance
-            self.stock_noise = torch.concat([model_pred[0:1], self.stock_noise[1:]], dim=0)
-        elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
-            # In "full" mode, model_pred contains [uncond, cond] chunks
-            noise_pred_uncond, noise_pred_text = model_pred.chunk(2)
-        else:
-            noise_pred_text = model_pred
-        if self.guidance_scale > 1.0 and (self.cfg_type == "self" or self.cfg_type == "initialize"):
-            # Use stored noise as the self-condition unconditional prediction
-            noise_pred_uncond = self.stock_noise * self.delta
-        if self.guidance_scale > 1.0 and self.cfg_type != "none":
-            # Combine unconditional and text predictions (CFG formula)
-            model_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
-        else:
-            model_pred = noise_pred_text
+            # Update for SD 3.5: Handle text embeddings and model predictions
+            if self.cfg_type == "full":
+                # In SD 3.5, model_pred contains [uncond, cond] chunks
+                noise_pred_uncond, noise_pred_text = model_pred.chunk(2)
+            else:
+                noise_pred_text = model_pred
+
+            if self.cfg_type == "self" or self.cfg_type == "initialize":
+                # Use stored noise as the self-condition unconditional prediction
+                noise_pred_uncond = self.stock_noise * self.delta
+
+            if self.cfg_type != "none":
+                # Combine unconditional and text predictions (CFG formula)
+                model_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+            else:
+                model_pred = noise_pred_text
         # Compute the denoised latent for current step
         if self.use_denoising_batch:
             denoised_batch = self.scheduler_step_batch(model_pred, x_t_latent, idx)
@@ -376,7 +384,6 @@ class StreamV2V:
                 self.stock_noise = init_noise + delta_x
         else:
             # Single-step update (not batch mode)
-            # (Using custom scheduler step for consistency)
             denoised_batch = self.scheduler_step_batch(model_pred, x_t_latent, idx)
         return denoised_batch, model_pred
 
@@ -417,10 +424,34 @@ class StreamV2V:
             if self.denoising_steps_num > 1:
                 # Ensure prev_latent_batch is a tensor before concatenation
                 if prev_latent_batch is not None:
+                    # Log the type and shape of x_t_latent for debugging
+                    print(f"x_t_latent type: {type(x_t_latent)}")
+                    if isinstance(x_t_latent, torch.Tensor):
+                        print(f"x_t_latent shape: {x_t_latent.shape}")
+                    elif isinstance(x_t_latent, tuple):
+                        print(f"x_t_latent length: {len(x_t_latent)}")
+                        for i, item in enumerate(x_t_latent):
+                            print(f"x_t_latent[{i}] type: {type(item)}")
+                            if isinstance(item, torch.Tensor):
+                                print(f"x_t_latent[{i}] shape: {item.shape}")
+                    # Log the type and shape of prev_latent_batch for debugging
+                    print(f"prev_latent_batch type: {type(prev_latent_batch)}")
+                    if isinstance(prev_latent_batch, torch.Tensor):
+                        print(f"prev_latent_batch shape: {prev_latent_batch.shape}")
+                    elif isinstance(prev_latent_batch, tuple):
+                        print(f"prev_latent_batch[0] type: {type(prev_latent_batch[0])}")
+                        if isinstance(prev_latent_batch[0], torch.Tensor):
+                            print(f"prev_latent_batch[0] shape: {prev_latent_batch[0].shape}")
+                    # Ensure prev_latent_batch is a tensor before concatenation
                     if isinstance(prev_latent_batch, tuple):
                         prev_latent_batch = prev_latent_batch[0]
+                    if not isinstance(prev_latent_batch, torch.Tensor):
+                        prev_latent_batch = torch.zeros_like(x_t_latent)
                     # Concatenate current latent with buffered latents from previous steps
-                    x_t_latent = torch.cat((x_t_latent, prev_latent_batch), dim=0)
+                    if isinstance(x_t_latent, tuple) and len(x_t_latent) == 0:
+                        x_t_latent = prev_latent_batch
+                    else:
+                        x_t_latent = torch.cat((x_t_latent, prev_latent_batch), dim=0)
                     # Rotate the stock noise buffer for next iteration
                     self.stock_noise = torch.cat((self.init_noise[0:1], self.stock_noise[:-1]), dim=0)
                 else:

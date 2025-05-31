@@ -132,6 +132,7 @@ for nm,df in vids.iloc[:1].groupby('nm'):
     vidz = df.pth.to_list()
 
     for vid,prompt in zip(vidz,df.prompt):
+        prompt = prompt[:20]  # limit prompt length
         prompt = [prompt]*3
         outvid = outvidpth/vid.name
         bch = df.iloc[0]

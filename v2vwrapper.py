@@ -292,7 +292,7 @@ class StreamV2VWrapper:
             self.stream.prompt_embeds = torch.cat(
                 [uncond_prompt_embeds, self.stream.prompt_embeds], dim=0
             )
-        print(f'Injected! {prompt}')
+        print('Injected! prompt')
 
     def __call__(
         self,
