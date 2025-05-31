@@ -87,6 +87,13 @@ class StreamV2V:
         self.pooled_prompt_embeds: Optional[torch.Tensor] = None
         self.null_pooled_prompt_embeds: Optional[torch.Tensor] = None
 
+        # Initialize alpha and beta tensors for noise scheduling
+        self.alpha_prod_t_sqrt = torch.ones(len(t_index_list), device=self.device)
+        self.beta_prod_t_sqrt = torch.zeros(len(t_index_list), device=self.device)
+        for i, t in enumerate(t_index_list):
+            self.alpha_prod_t_sqrt[i] = torch.sqrt(1 - (self.scheduler.sigmas[t] ** 2))
+            self.beta_prod_t_sqrt[i] = torch.sqrt(self.scheduler.sigmas[t] ** 2)
+
 
     def load_lcm_lora(
         self,
@@ -408,12 +415,18 @@ class StreamV2V:
         if self.use_denoising_batch:
             t_list = self.sub_timesteps_tensor
             if self.denoising_steps_num > 1:
-                # Concatenate current latent with buffered latents from previous steps
-                x_t_latent = torch.cat((x_t_latent, prev_latent_batch), dim=0)
-                # Rotate the stock noise buffer for next iteration
-                self.stock_noise = torch.cat((self.init_noise[0:1], self.stock_noise[:-1]), dim=0)
+                # Ensure prev_latent_batch is a tensor before concatenation
+                if prev_latent_batch is not None:
+                    if isinstance(prev_latent_batch, tuple):
+                        prev_latent_batch = prev_latent_batch[0]
+                    # Concatenate current latent with buffered latents from previous steps
+                    x_t_latent = torch.cat((x_t_latent, prev_latent_batch), dim=0)
+                    # Rotate the stock noise buffer for next iteration
+                    self.stock_noise = torch.cat((self.init_noise[0:1], self.stock_noise[:-1]), dim=0)
+                else:
+                    prev_latent_batch = torch.zeros_like(x_t_latent)
             # Perform a batch denoising step for all timesteps at once
-            x_0_pred_batch, model_pred = self.unet_step(x_t_latent, t_list)
+            x_0_pred_batch, _ = self.unet_step(x_t_latent, t_list)
             if self.denoising_steps_num > 1:
                 # The last element of x_0_pred_batch corresponds to the final denoised latent
                 x_0_pred_out = x_0_pred_batch[-1].unsqueeze(0)
@@ -435,7 +448,7 @@ class StreamV2V:
             self.init_noise = x_t_latent
             for idx, t in enumerate(self.sub_timesteps_tensor):
                 t_batch = t.view(1,).repeat(self.frame_bff_size)
-                x_0_pred, model_pred = self.unet_step(x_t_latent, t_batch, idx)
+                x_0_pred, _ = self.unet_step(x_t_latent, t_batch, idx)
                 if idx < len(self.sub_timesteps_tensor) - 1:
                     # Add noise for next step if needed
                     if self.do_add_noise:
