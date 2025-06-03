@@ -334,6 +334,7 @@ class StreamV2V:
             else:
                 x_t_latent_plus_uc = x_t_latent
         # Denoise using the transformer (SD3.5) model
+        # For SD3.5, the transformer's forward pass returns a tuple with different structure
         model_out = self.transformer(
             hidden_states=x_t_latent_plus_uc,
             timestep=t_list,
@@ -341,7 +342,21 @@ class StreamV2V:
             pooled_projections=self.pooled_prompt_embeds if self.pooled_prompt_embeds is not None else None,
             return_dict=False,
         )
-        model_pred = model_out[0]  # predicted noise (epsilon) or model output
+        # Extract the predicted noise (epsilon) from the model output
+        if isinstance(model_out, tuple):
+            # Handle both SD1.5 and SD3.5 output formats
+            if len(model_out) >= 9:
+                # For SD3.5, the output is a tuple with 9 elements
+                model_pred = torch.cat(model_out[:1], dim=0)  # Use only the first element for SD3.5
+            elif len(model_out) >= 4:
+                # For SD3.5, the output is a tuple with 4 elements
+                model_pred = torch.cat(model_out[:1], dim=0)  # Use only the first element for SD3.5
+            elif len(model_out) >= 1:
+                model_pred = model_out[0]
+            else:
+                raise ValueError("Transformer model output is empty")
+        else:
+            model_pred = model_out
         # Handle classifier-free guidance mixing
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
             # In "initialize" mode, first element is unconditional prediction
@@ -375,11 +390,11 @@ class StreamV2V:
                     dim=0,
                 )
                 delta_x = alpha_next * delta_x
-                beta_next = torch.concat(
+                Beta_next = torch.concat(
                     [self.beta_prod_t_sqrt[1:], torch.ones_like(self.beta_prod_t_sqrt[0:1])],
                     dim=0,
                 )
-                delta_x = delta_x / beta_next
+                delta_x = delta_x / Beta_next
                 init_noise = torch.concat([self.init_noise[1:], self.init_noise[0:1]], dim=0)
                 self.stock_noise = init_noise + delta_x
         else:
