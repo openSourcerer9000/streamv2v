@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torchvision.models.optical_flow import raft_small
 
-from diffusers import FlowMatchEulerDiscreteScheduler, StableDiffusionPipeline
+from diffusers import FlowMatchEulerDiscreteScheduler, StableDiffusion3Pipeline as StableDiffusionPipeline
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import retrieve_latents
 
@@ -73,12 +73,13 @@ class StreamV2V:
         # self.scheduler = FlowMatchEulerDiscreteScheduler.from_config(self.pipe.scheduler.config)
         # new FlowMatch scheduler (for SD-3.5)
         # print(f"Using FlowMatchEulerDiscreteScheduler for SD-3.5 {self.pipe.scheduler.config}")
+        # Updated for SD 3.5
         self.scheduler = FlowMatchEulerDiscreteScheduler.from_config(
             self.pipe.scheduler.config
         )
         self.text_encoder = pipe.text_encoder
-        # Use the SD3.5 transformer model instead of SD1.5 UNet
-        self.transformer = pipe.transformer
+        # Use the SD3.5 model components
+        self.transformer = pipe  # Updated for SD3.5 which uses the entire pipeline
         self.vae = pipe.vae
         self.flow_model = raft_small(pretrained=True, progress=False).to(device=pipe.device).eval()
         self.cached_x_t_latent = deque(maxlen=4)
@@ -171,13 +172,26 @@ class StreamV2V:
         else:    
             promptkwargs= {"prompt": prompt}
         print(f"Prompt kwargs: {promptkwargs}")
-        encoder_output = self.pipe.encode_prompt(
-            **promptkwargs,
-            device=self.device,
-            num_images_per_prompt=1,
-            do_classifier_free_guidance=True,
-            negative_prompt=negative_prompt,
-        )
+        # Updated for SD3.5 encoding
+        # Handle multiple prompts for SD3.5
+        if isinstance(prompt, list):
+            encoder_output = self.pipe.encode_prompt(
+                prompt=promptkwargs["prompt"],
+                prompt_2=promptkwargs.get("prompt_2", ""),
+                prompt_3=promptkwargs.get("prompt_3", ""),
+                device=self.device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=True,
+                negative_prompt=negative_prompt,
+            )
+        else:
+            encoder_output = self.pipe.encode_prompt(
+                prompt=promptkwargs["prompt"],
+                device=self.device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=True,
+                negative_prompt=negative_prompt,
+            )
         # Handle outputs from encode_prompt (supports SD3.5 which returns 4 values, or older pipelines with 2 values)
         if isinstance(encoder_output, (tuple, list)):
             if len(encoder_output) == 4:
@@ -195,6 +209,20 @@ class StreamV2V:
         self.null_prompt_embeds = neg_prompt_embeds
         # Set up pooled text embeddings if provided (for SD3.5 transformer)
         if pooled_prompt_embeds is not None:
+            # Ensure both tensors have the same dimensions
+            # Ensure both tensors have the same dimensions (3D)
+            if neg_pooled_prompt_embeds.dim() == 2:
+                # Add dimensions to match pooled_prompt_embeds
+                neg_pooled_prompt_embeds = neg_pooled_prompt_embeds.unsqueeze(0).unsqueeze(1)
+            elif neg_pooled_prompt_embeds.dim() == 3 and pooled_prompt_embeds.dim() == 3:
+                # Already in the correct shape
+                pass
+            else:
+                # Handle unexpected dimensions by reshaping to match expected format
+                if neg_pooled_prompt_embeds.dim() == 1:
+                    neg_pooled_prompt_embeds = neg_pooled_prompt_embeds.unsqueeze(0).unsqueeze(0)
+                elif neg_pooled_prompt_embeds.dim() == 2:
+                    neg_pooled_prompt_embeds = neg_pooled_prompt_embeds.unsqueeze(0)
             self.pooled_prompt_embeds = pooled_prompt_embeds.repeat(self.batch_size, 1, 1)
             self.null_pooled_prompt_embeds = neg_pooled_prompt_embeds
         else:
@@ -215,7 +243,10 @@ class StreamV2V:
             # Concatenate unconditional and conditional embeddings for CFG
             self.prompt_embeds = torch.cat([uncond_prompt_embeds, self.prompt_embeds], dim=0)
             if self.pooled_prompt_embeds is not None:
+                print(f"uncond_pooled_prompt_embeds shape: {uncond_pooled_prompt_embeds.shape}")
+                print(f"self.pooled_prompt_embeds shape: {self.pooled_prompt_embeds.shape}")
                 self.pooled_prompt_embeds = torch.cat([uncond_pooled_prompt_embeds, self.pooled_prompt_embeds], dim=0)
+                print(f"After concat pooled_prompt_embeds shape: {self.pooled_prompt_embeds.shape}")
         # Set scheduler timesteps
         self.scheduler.set_timesteps(num_inference_steps, self.device)
         self.timesteps = self.scheduler.timesteps.to(self.device)
@@ -333,28 +364,34 @@ class StreamV2V:
                 x_t_latent_plus_uc = torch.nn.functional.conv2d(x_t_latent, weight=weight, stride=1, padding=1)
             else:
                 x_t_latent_plus_uc = x_t_latent
-        # Denoise using the transformer (SD3.5) model
-        # For SD3.5, the transformer's forward pass returns a tuple with different structure
+        # Denoise using the pipeline (SD3.5)
+        # Fix dimension mismatch for pooled prompt embeds
+        if self.pooled_prompt_embeds is not None and hasattr(self, 'null_pooled_prompt_embeds') and self.null_pooled_prompt_embeds is not None:
+            # Ensure both tensors have the same dimensions (3D)
+            if self.null_pooled_prompt_embeds.dim() == 2:
+                # Add dimensions to match pooled_prompt_embeds
+                self.null_pooled_prompt_embeds = self.null_pooled_prompt_embeds.unsqueeze(0).unsqueeze(1)
+            elif self.null_pooled_prompt_embeds.dim() == 3 and self.pooled_prompt_embeds.dim() == 3:
+                # Already in the correct shape
+                pass
+            else:
+                # Handle unexpected dimensions by reshaping to match expected format
+                if self.null_pooled_prompt_embeds.dim() == 1:
+                    self.null_pooled_prompt_embeds = self.null_pooled_prompt_embeds.unsqueeze(0).unsqueeze(0)
+                elif self.null_pooled_prompt_embeds.dim() == 2:
+                    self.null_pooled_prompt_embeds = self.null_pooled_prompt_embeds.unsqueeze(0)
+
         model_out = self.transformer(
-            hidden_states=x_t_latent_plus_uc,
-            timestep=t_list,
-            encoder_hidden_states=self.prompt_embeds,
-            pooled_projections=self.pooled_prompt_embeds if self.pooled_prompt_embeds is not None else None,
-            return_dict=False,
-        )
+            prompt_embeds=self.prompt_embeds,
+            pooled_prompt_embeds=self.pooled_prompt_embeds if self.pooled_prompt_embeds is not None else None,
+            latents=x_t_latent_plus_uc,
+        ).images
         # Extract the predicted noise (epsilon) from the model output
         if isinstance(model_out, tuple):
             # Handle both SD1.5 and SD3.5 output formats
             if len(model_out) >= 9:
-                # For SD3.5, the output is a tuple with 9 elements
-                model_pred = torch.cat(model_out[:1], dim=0)  # Use only the first element for SD3.5
-            elif len(model_out) >= 4:
-                # For SD3.5, the output is a tuple with 4 elements
-                model_pred = torch.cat(model_out[:1], dim=0)  # Use only the first element for SD3.5
-            elif len(model_out) >= 1:
-                model_pred = model_out[0]
-            else:
-                raise ValueError("Transformer model output is empty")
+                # For SD3.5, the output is a tensor directly
+                model_pred = model_out
         else:
             model_pred = model_out
         # Handle classifier-free guidance mixing
