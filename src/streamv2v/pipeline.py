@@ -384,6 +384,45 @@ class StreamV2V:
             )
             return x_0_pred[-1:]
         return x_0_pred
+    
+    #lora stuff
+    def load_lcm_lora(
+        self,
+        pretrained_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]] = "latent-consistency/lcm-lora-sdv1-5",
+        adapter_name: Optional[Any] = "lcm",
+        **kwargs,
+    ) -> None:
+        self.pipe.load_lora_weights(pretrained_model_name_or_path_or_dict, adapter_name, **kwargs)
+
+    def load_lora(
+        self,
+        pretrained_lora_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]],
+        adapter_name: Optional[Any] = None,
+        **kwargs,
+    ) -> None:
+        self.pipe.load_lora_weights(pretrained_lora_model_name_or_path_or_dict, adapter_name, **kwargs)
+
+    def fuse_lora(
+        self,
+        fuse_unet: bool = True,
+        fuse_text_encoder: bool = True,
+        lora_scale: float = 1.0,
+        safe_fusing: bool = False,
+    ) -> None:
+        self.pipe.fuse_lora(
+            fuse_unet=fuse_unet,
+            fuse_text_encoder=fuse_text_encoder,
+            lora_scale=lora_scale,
+            safe_fusing=safe_fusing,
+        )
+
+    def enable_similar_image_filter(self, threshold: float = 0.98, max_skip_frame: float = 10) -> None:
+        self.similar_image_filter = True
+        self.similar_filter.set_threshold(threshold)
+        self.similar_filter.set_max_skip_frame(max_skip_frame)
+
+    def disable_similar_image_filter(self) -> None:
+        self.similar_image_filter = False
 
     # ---------------------------------------------------------------------
     # Main call (per frame) -------------------------------------------------
