@@ -1,3 +1,5 @@
+
+
 """StreamV2V – Stable Diffusion 3.5 Medium‑Turbo version
 ------------------------------------------------------
 A drop‑in replacement for the original StreamV2V pipeline that targets the
@@ -22,8 +24,34 @@ The public API (constructor, `prepare`, `update_prompt`, `__call__`) remains
 unchanged relative to the previous StreamV2V implementation, so existing
 calling code continues to work.
 """
-
 from __future__ import annotations
+
+# import builtins
+# import inspect
+
+# import tqdm.auto as tqdma
+
+# original_tqdm = tqdma.tqdm
+
+# def quiet_tqdm(*args, **kwargs):
+#     # Look at the call stack
+#     for frame in inspect.stack():
+#         path = frame.filename
+#         if any(pkg in path for pkg in ("diffusers", "huggingface_hub")):
+#             # return dummy iterator if inside HF code
+#             return iter(args[0]) if args else iter([])
+#     # fallback to normal tqdm
+#     return original_tqdm(*args, **kwargs)
+
+# # Only override once
+# if isinstance(tqdma.tqdm, type):
+#     tqdma.tqdm = quiet_tqdm
+
+
+# from diffusers.utils import logging as dlogging
+
+# # Disable only diffusers' internal bars
+# dlogging.disable_progress_bar()
 
 import time
 from collections import deque
@@ -48,12 +76,20 @@ from .image_utils import postprocess_image, forward_backward_consistency_check  
 from .models.utils import get_nn_latent  # noqa: F401 – kept for API parity
 from .image_filter import SimilarImageFilter
 
+# ---------------------------------------------------------------------------
+# Small util helpers
+# ---------------------------------------------------------------------------
+
+def _round_down(x: int, m: int) -> int:
+    """Largest multiple of *m* ≤ *x*."""
+    return (x // m) * m
 
 def _repeat(t: Optional[torch.Tensor], times: int) -> Optional[torch.Tensor]:
     """Utility: repeat `t` along batch dim `times` if `t` is not None."""
     if t is None:
         return None
     return t.repeat(times, 1, *([] if t.dim() == 2 else [1]))
+
 
 
 class StreamV2V:
@@ -87,15 +123,18 @@ class StreamV2V:
         else:
             raise RuntimeError("StreamV2V requires CUDA or MPS device.")
 
-        # -----------------------------------------------------------------
-        # Model‑specific constants
-        # -----------------------------------------------------------------
+        # ------- Ensure spatial dims are multiples of 64 ------------------
+        width = _round_down(width, 64)
+        height = _round_down(height, 64)
+        if width == 0 or height == 0:
+            raise ValueError("width/height must be ≥64 and multiples of 64.")
+
+        # Model constants --------------------------------------------------
         self.dtype = torch_dtype
         self.height = height
         self.width = width
         self.latent_height = height // pipe.vae_scale_factor
         self.latent_width = width // pipe.vae_scale_factor
-        # SD 3 VAE outputs 16‑channel latents; SD 1.x = 4.
         self.latent_channels = getattr(pipe.vae.config, "latent_channels", 4)
 
         # Denoising step handling

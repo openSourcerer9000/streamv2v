@@ -1,3 +1,18 @@
+# import tqdm.auto
+# import types
+
+# # Save original
+# _real_tqdm = tqdm.auto.tqdm
+
+# # Patch: disables bars only if called from diffusers
+# def patched_tqdm(*args, **kwargs):
+#     from inspect import stack
+#     for frame in stack():
+#         if "diffusers" in frame.filename:
+#             return iter(args[0]) if args else iter([])
+#     return _real_tqdm(*args, **kwargs)
+
+# tqdm.auto.tqdm = patched_tqdm
 
 
 try:
